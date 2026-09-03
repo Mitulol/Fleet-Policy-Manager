@@ -9,21 +9,30 @@ README.
 |---|---|
 | `main.bicep` | Every Azure resource: Container Apps environment, 5 apps, Azure Cache for Redis, PostgreSQL Flexible Server, Log Analytics. |
 | `main.parameters.json` | Non-secret parameter values. Secrets are passed by `deploy.sh` on the command line. |
-| `deploy.sh` | Creates the resource group and registry, builds/pushes images with `az acr build`, deploys the template, writes `.deploy-state`. |
+| `deploy.sh` | Creates the resource group and registry, builds/pushes the six images with local Docker, deploys the template, writes `.deploy-state`. `--what-if` previews without creating the apps / Redis / Postgres. |
 | `loadtest-cloud.sh` | Seeds policies, runs the fleet simulator against the public gateway, watches Compliance replicas scale. |
 | `teardown.sh` | `--pause` stops the hourly-billed resources; no argument deletes the resource group. |
 | `.deploy-state` | Written by `deploy.sh` — URLs and generated keys. Gitignored (contains secrets). |
 
 ## Prerequisites
 
+- Azure CLI, Docker running locally, an Azure subscription.
+
 ```bash
 az login
 az account set --subscription "<name or id>"
 az extension add --name containerapp --upgrade
-az provider register --namespace Microsoft.App
-az provider register --namespace Microsoft.Cache
-az provider register --namespace Microsoft.DBforPostgreSQL
-az provider register --namespace Microsoft.OperationalInsights
+for ns in Microsoft.App Microsoft.Cache Microsoft.DBforPostgreSQL \
+          Microsoft.OperationalInsights Microsoft.ContainerRegistry; do
+  az provider register --namespace "$ns"
+done
+```
+
+If your subscription restricts deployment regions (Azure for Students does),
+check the allowed list and pass one as `LOCATION`:
+
+```bash
+az policy assignment list --query "[?displayName=='Allowed resource deployment regions'].parameters"
 ```
 
 ## Quick start

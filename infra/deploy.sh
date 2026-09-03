@@ -17,22 +17,35 @@
 # What this does:
 #   1. Creates a resource group
 #   2. Creates an Azure Container Registry
-#   3. Builds and pushes all six images with `az acr build` (builds run in Azure)
+#   3. Builds all six images locally with Docker and pushes them to the registry
+#      (ACR Tasks / `az acr build` are blocked on some subscriptions, so a local
+#      build is the portable path — Docker must be running)
 #   4. Deploys everything else from infra/main.bicep
 #   5. Writes connection details to infra/.deploy-state for the other scripts
 #
 # Configuration (override by exporting before running):
 #   RESOURCE_GROUP   default: fleet-policy-manager
-#   LOCATION         default: eastus
+#   LOCATION         default: centralus
 #   NAME_PREFIX      default: fleetpm   (3-11 lowercase alphanumerics)
 #
+# Some subscriptions (Azure for Students among them) restrict which regions you
+# may deploy to. Check yours with:
+#   az policy assignment list --query "[?displayName=='Allowed resource deployment regions'].parameters"
+# and set LOCATION to one of the allowed values.
+#
 # Usage:
-#   ./infra/deploy.sh
+#   ./infra/deploy.sh              build images and deploy everything
+#   ./infra/deploy.sh --what-if    create only the resource group + registry,
+#                                  then show what the deployment WOULD change,
+#                                  without creating the apps / Redis / Postgres
 
 set -euo pipefail
 
+WHATIF=0
+[[ "${1:-}" == "--what-if" ]] && WHATIF=1
+
 RESOURCE_GROUP="${RESOURCE_GROUP:-fleet-policy-manager}"
-LOCATION="${LOCATION:-eastus}"
+LOCATION="${LOCATION:-centralus}"
 NAME_PREFIX="${NAME_PREFIX:-fleetpm}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -78,31 +91,88 @@ az group create --name "${RESOURCE_GROUP}" --location "${LOCATION}" --output non
 
 # ---------------------------------------------------------------- container registry
 
-echo "==> Container registry: ${ACR_NAME}"
-az acr create \
-  --resource-group "${RESOURCE_GROUP}" \
-  --name "${ACR_NAME}" \
-  --sku Basic \
-  --admin-enabled true \
-  --output none
+if az acr show --name "${ACR_NAME}" --resource-group "${RESOURCE_GROUP}" --output none 2>/dev/null; then
+  echo "==> Container registry: ${ACR_NAME} (exists, reusing)"
+else
+  echo "==> Container registry: ${ACR_NAME} (creating)"
+  az acr create \
+    --resource-group "${RESOURCE_GROUP}" \
+    --name "${ACR_NAME}" \
+    --sku Basic \
+    --admin-enabled true \
+    --output none
+fi
+
+# ---------------------------------------------------------------- what-if: plan and stop
+
+if [[ "${WHATIF}" -eq 1 ]]; then
+  # Persist enough state that a following real run reuses this RG, registry and
+  # secrets instead of generating new ones.
+  cat > "${STATE_FILE}" <<EOF
+# Partial state from 'deploy.sh --what-if'. Re-run without --what-if to apply.
+RESOURCE_GROUP=${RESOURCE_GROUP}
+LOCATION=${LOCATION}
+NAME_PREFIX=${NAME_PREFIX}
+ACR_NAME=${ACR_NAME}
+GATEWAY_ADMIN_KEY=${GATEWAY_ADMIN_KEY}
+GATEWAY_DEVICE_KEY=${GATEWAY_DEVICE_KEY}
+PG_ADMIN_PASSWORD=${PG_ADMIN_PASSWORD}
+EOF
+  chmod 600 "${STATE_FILE}"
+
+  echo
+  echo "==> what-if: previewing the deployment (no apps / Redis / Postgres created)"
+  az deployment group what-if \
+    --resource-group "${RESOURCE_GROUP}" \
+    --template-file infra/main.bicep \
+    --parameters infra/main.parameters.json \
+    --parameters \
+        namePrefix="${NAME_PREFIX}" \
+        location="${LOCATION}" \
+        acrName="${ACR_NAME}" \
+        imageTag="${IMAGE_TAG}" \
+        pgAdminPassword="${PG_ADMIN_PASSWORD}" \
+        gatewayAdminKeys="${GATEWAY_ADMIN_KEY}" \
+        gatewayDeviceKeys="${GATEWAY_DEVICE_KEY}"
+
+  echo
+  echo "what-if only. Standing resources so far: resource group + registry (~\$5/mo)."
+  echo "Run  ./infra/deploy.sh  (no flag) to build images and apply."
+  exit 0
+fi
 
 # ---------------------------------------------------------------- build images
 
-# Each Dockerfile builds from the repo root so it can pull in shared/fleetcommon.
-# .dockerignore keeps the uploaded context small.
+# Images are built locally with Docker and pushed to the registry.
+#
+# The obvious choice would be `az acr build` (server-side build, no local
+# Docker needed), but ACR Tasks are not permitted on some subscriptions —
+# Azure for Students among them — so a local build + push is the portable path.
+# Each Dockerfile builds from the repo root so it can pull in
+# shared/fleetcommon; .dockerignore keeps the context small.
+
+command -v docker >/dev/null || { echo "ERROR: Docker is required to build the images (ACR Tasks are not available on this subscription)." >&2; exit 1; }
+docker info >/dev/null 2>&1 || { echo "ERROR: Docker daemon is not running." >&2; exit 1; }
+
+ACR_LOGIN_SERVER="$(az acr show --name "${ACR_NAME}" --resource-group "${RESOURCE_GROUP}" --query loginServer -o tsv)"
+
+echo "==> Authenticating Docker to ${ACR_LOGIN_SERVER}"
+az acr login --name "${ACR_NAME}" --output none
+
 build_image() {
   local name="$1" dockerfile="$2"
-  echo "    building fleet/${name}:${IMAGE_TAG}"
-  az acr build \
-    --registry "${ACR_NAME}" \
-    --image "fleet/${name}:${IMAGE_TAG}" \
-    --image "fleet/${name}:latest" \
-    --file "${dockerfile}" \
-    --output none \
-    .
+  local ref="${ACR_LOGIN_SERVER}/fleet/${name}"
+  echo "    building and pushing ${ref}:${IMAGE_TAG}"
+  docker build --quiet --platform linux/amd64 \
+    -f "${dockerfile}" \
+    -t "${ref}:${IMAGE_TAG}" \
+    -t "${ref}:latest" \
+    . >/dev/null
+  docker push --quiet "${ref}:${IMAGE_TAG}"
+  docker push --quiet "${ref}:latest"
 }
 
-echo "==> Building and pushing images (this runs in Azure, ~5-8 min total)"
+echo "==> Building and pushing images (~4-8 min depending on upload speed)"
 build_image registry   services/registry/Dockerfile
 build_image policy     services/policy/Dockerfile
 build_image compliance services/compliance/Dockerfile

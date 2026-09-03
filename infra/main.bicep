@@ -231,6 +231,10 @@ resource registryApp 'Microsoft.App/containerApps@2024-03-01' = {
       activeRevisionsMode: 'Single'
       ingress: {
         external: false
+        // Internal ingress 301-redirects HTTP to HTTPS by default. The gateway
+        // calls these backends over http:// on the environment's private
+        // network, so allow plain HTTP and skip the redirect.
+        allowInsecure: true
         targetPort: 8001
         transport: 'http'
       }
@@ -274,6 +278,7 @@ resource policyApp 'Microsoft.App/containerApps@2024-03-01' = {
       activeRevisionsMode: 'Single'
       ingress: {
         external: false
+        allowInsecure: true
         targetPort: 8002
         transport: 'http'
       }
@@ -318,6 +323,7 @@ resource complianceApp 'Microsoft.App/containerApps@2024-03-01' = {
       activeRevisionsMode: 'Single'
       ingress: {
         external: false
+        allowInsecure: true
         targetPort: 8003
         transport: 'http'
       }

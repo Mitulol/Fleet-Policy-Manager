@@ -332,20 +332,30 @@ identifier, so `GET /api/compliance/stats` shows the live per-replica split.
 
 ### Deploy it
 
-Everything is scripted. Requires the [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli)
-and an Azure subscription.
+Everything is scripted. Requires the [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli),
+Docker, and an Azure subscription.
 
 ```bash
 az login
 az extension add --name containerapp --upgrade
 
-./infra/deploy.sh
+./infra/deploy.sh --what-if     # preview: creates only the resource group + registry
+./infra/deploy.sh               # build, push, deploy everything
 ```
 
-`deploy.sh` creates a resource group and a container registry, builds and
-pushes all six images with `az acr build` (the builds run in Azure), deploys
-everything else from the Bicep template, and prints the public URLs and the
-generated API keys.
+`deploy.sh` creates a resource group and a container registry, builds all six
+images locally with Docker and pushes them, deploys everything else from the
+Bicep template, and prints the public URLs and the generated API keys.
+
+Images are built locally rather than with `az acr build` because ACR Tasks are
+not available on every subscription (Azure for Students blocks them). The
+default region is `centralus`; if your subscription restricts regions, set
+`LOCATION` to an allowed one:
+
+```bash
+az policy assignment list --query "[?displayName=='Allowed resource deployment regions'].parameters"
+LOCATION=canadacentral ./infra/deploy.sh
+```
 
 ```bash
 ./infra/loadtest-cloud.sh 500 240      # seed policies, run the simulator, watch replicas scale
