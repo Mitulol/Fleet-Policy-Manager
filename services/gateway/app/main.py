@@ -94,6 +94,32 @@ app = FastAPI(
 )
 
 
+@app.get("/")
+async def index() -> JSONResponse:
+    """Service index.
+
+    The gateway is a JSON API with no page of its own, so hitting the root
+    would otherwise return a bare 404. This points a browser at the parts that
+    are meant to be opened directly.
+    """
+    return JSONResponse(
+        content={
+            "service": SERVICE_NAME,
+            "description": "Single entry point for the Fleet Policy Manager platform.",
+            "documentation": "/docs",
+            "health": "/health",
+            "dashboard": "http://localhost:8090",
+            "routes": {
+                "device registry": "/api/registry/*  -> devices, heartbeats, groups",
+                "policy": "/api/policy/*  -> policy definitions and rollouts",
+                "compliance": "/api/compliance/*  -> compliance verdicts and rollout progress",
+                "fleet summary": "/api/fleet/summary  -> aggregated view for the dashboard",
+            },
+            "authentication": "send an API key in the X-API-Key header",
+        }
+    )
+
+
 @app.get("/health")
 async def health() -> JSONResponse:
     """Aggregate health.
