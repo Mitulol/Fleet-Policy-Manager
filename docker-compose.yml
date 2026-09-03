@@ -1,0 +1,204 @@
+name: fleet-policy-manager
+
+# Everything the platform needs comes up with a single command. The three
+# Compliance replicas are declared explicitly rather than through a replica
+# count so that each has a stable, predictable name -- which is what makes it
+# possible to kill one specific replica during the failover demonstration and
+# know exactly which one went away.
+
+x-compliance-base: &compliance-base
+  build:
+    context: .
+    dockerfile: services/compliance/Dockerfile
+  image: fleet/compliance-service:1.0.0
+  environment: &compliance-env
+    COMPLIANCE_DSN: postgresql://fleet:fleet@compliance-db:5432/compliance
+    REDIS_URL: redis://redis:6379/0
+    COMPLIANCE_CONSUMER_GROUP: compliance-workers
+    COMPLIANCE_STALE_SECONDS: "90"
+  depends_on:
+    compliance-db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  networks: [fleet]
+  restart: unless-stopped
+
+services:
+  # ---------------------------------------------------------------- infrastructure
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [fleet]
+    restart: unless-stopped
+
+  # Private to the Compliance Service. No other service is given credentials
+  # for it; replicas of Compliance share it so they agree on fleet state.
+  compliance-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: fleet
+      POSTGRES_PASSWORD: fleet
+      POSTGRES_DB: compliance
+    volumes:
+      - compliance-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fleet -d compliance"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    networks: [fleet]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------- services
+  registry:
+    build:
+      context: .
+      dockerfile: services/registry/Dockerfile
+    image: fleet/registry-service:1.0.0
+    environment:
+      REGISTRY_DB_PATH: /data/registry.db
+      HEARTBEAT_TTL_SECONDS: "45"
+      HEARTBEAT_INTERVAL_SECONDS: "15"
+    volumes:
+      - registry-data:/data
+    networks: [fleet]
+    restart: unless-stopped
+
+  policy:
+    build:
+      context: .
+      dockerfile: services/policy/Dockerfile
+    image: fleet/policy-service:1.0.0
+    environment:
+      POLICY_DB_PATH: /data/policy.db
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - policy-data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks: [fleet]
+    restart: unless-stopped
+
+  compliance-1:
+    <<: *compliance-base
+    environment:
+      <<: *compliance-env
+      INSTANCE_ID: compliance-1
+
+  compliance-2:
+    <<: *compliance-base
+    environment:
+      <<: *compliance-env
+      INSTANCE_ID: compliance-2
+
+  compliance-3:
+    <<: *compliance-base
+    environment:
+      <<: *compliance-env
+      INSTANCE_ID: compliance-3
+
+  # ---------------------------------------------------------------- load balancer
+  compliance-lb:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./loadbalancer/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - compliance-1
+      - compliance-2
+      - compliance-3
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/lb-health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [fleet]
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------- edge
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    image: fleet/api-gateway:1.0.0
+    ports:
+      - "8000:8000"
+    environment:
+      REGISTRY_URL: http://registry:8001
+      POLICY_URL: http://policy:8002
+      COMPLIANCE_URL: http://compliance-lb:8080
+      REDIS_URL: redis://redis:6379/0
+      GATEWAY_ADMIN_KEYS: ${GATEWAY_ADMIN_KEYS:-fleet-admin-key}
+      GATEWAY_DEVICE_KEYS: ${GATEWAY_DEVICE_KEYS:-fleet-device-key}
+      RATE_LIMIT_DEVICE_BURST: "2000"
+      RATE_LIMIT_DEVICE_PER_SECOND: "1000"
+      RATE_LIMIT_ADMIN_BURST: "240"
+      RATE_LIMIT_ADMIN_PER_SECOND: "120"
+    depends_on:
+      redis:
+        condition: service_healthy
+      registry:
+        condition: service_started
+      policy:
+        condition: service_started
+      compliance-lb:
+        condition: service_started
+    networks: [fleet]
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    image: fleet/dashboard:1.0.0
+    ports:
+      - "8090:8090"
+    environment:
+      GATEWAY_URL: http://gateway:8000
+      # A single key, not the gateway's whole comma-separated admin list. The
+      # dashboard holds it server-side and never sends it to the browser.
+      GATEWAY_API_KEY: ${DASHBOARD_API_KEY:-fleet-admin-key}
+      DASHBOARD_REFRESH_SECONDS: "2"
+    depends_on:
+      gateway:
+        condition: service_started
+    networks: [fleet]
+    restart: unless-stopped
+
+  # Not started by `docker compose up`. Run on demand with:
+  #   docker compose run --rm simulator --devices 500 --duration 120
+  simulator:
+    build:
+      context: .
+      dockerfile: tools/Dockerfile
+    image: fleet/simulator:1.0.0
+    profiles: ["tools"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+    command: ["--devices", "500", "--duration", "120"]
+    # Inside the compose network the gateway is reachable by service name, so
+    # the simulator needs no published port to drive the fleet.
+    entrypoint:
+      ["python", "simulator.py", "--gateway", "http://gateway:8000"]
+    depends_on:
+      gateway:
+        condition: service_started
+    networks: [fleet]
+
+networks:
+  fleet:
+    driver: bridge
+
+volumes:
+  redis-data:
+  compliance-db-data:
+  registry-data:
+  policy-data:

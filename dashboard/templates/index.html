@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleet Policy Manager</title>
+<style>
+  :root {
+    --bg: #0e1117;
+    --panel: #161b26;
+    --panel-2: #1c2230;
+    --border: #262d3d;
+    --text: #e6eaf2;
+    --muted: #8b95ab;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --bad: #f85149;
+    --accent: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  header {
+    padding: 18px 28px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  }
+  h1 { font-size: 17px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  .spacer { flex: 1; }
+  .pill {
+    font-size: 12px; padding: 3px 10px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--muted); background: var(--panel);
+  }
+  .pill.live { color: var(--ok); border-color: #1c3a24; background: #10231a; }
+  main { padding: 22px 28px 60px; max-width: 1500px; }
+  .banner {
+    display: none; margin-bottom: 18px; padding: 11px 16px; border-radius: 8px;
+    background: #2b1618; border: 1px solid #5c2326; color: #ffb4ac; font-size: 13px;
+  }
+  .banner.show { display: block; }
+  .grid {
+    display: grid; gap: 14px; margin-bottom: 22px;
+    grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+  }
+  .stat {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 15px 17px;
+  }
+  .stat .label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .8px;
+    color: var(--muted); margin-bottom: 7px;
+  }
+  .stat .value { font-size: 27px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stat .sub { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+  .value.ok { color: var(--ok); } .value.bad { color: var(--bad); } .value.warn { color: var(--warn); }
+
+  .panels { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(430px, 1fr)); }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 17px 19px;
+  }
+  .panel h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .8px;
+    color: var(--muted); margin: 0 0 14px; font-weight: 600;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th {
+    text-align: left; font-weight: 500; color: var(--muted); font-size: 11px;
+    text-transform: uppercase; letter-spacing: .6px;
+    padding: 0 10px 8px 0; border-bottom: 1px solid var(--border);
+  }
+  td { padding: 9px 10px 9px 0; border-bottom: 1px solid #1e2534; font-variant-numeric: tabular-nums; }
+  tr:last-child td { border-bottom: none; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+  .empty { color: var(--muted); font-size: 13px; padding: 14px 0; }
+
+  .bar { height: 6px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width .4s ease; }
+  .bar.ok > i { background: var(--ok); }
+
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 7px; vertical-align: middle; }
+  .dot.up { background: var(--ok); box-shadow: 0 0 0 3px rgba(63,185,80,.15); }
+  .dot.down { background: var(--bad); box-shadow: 0 0 0 3px rgba(248,81,73,.15); }
+  .tag {
+    font-size: 10.5px; padding: 2px 7px; border-radius: 4px;
+    background: var(--panel-2); color: var(--muted); border: 1px solid var(--border);
+  }
+  .tag.bad { color: #ffb4ac; border-color: #5c2326; background: #2b1618; }
+  .rollout { margin-bottom: 15px; }
+  .rollout:last-child { margin-bottom: 0; }
+  .rollout .top { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 13px; gap: 12px; }
+  .rollout .name { font-weight: 500; }
+  .rollout .meta { color: var(--muted); font-size: 12px; }
+  footer { color: var(--muted); font-size: 11.5px; padding: 0 28px 30px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Fleet Policy Manager</h1>
+  <span class="pill" id="clock">—</span>
+  <div class="spacer"></div>
+  <span class="pill live" id="poll-state">polling every {{ refresh_seconds }}s</span>
+</header>
+
+<main>
+  <div class="banner" id="banner"></div>
+
+  <div class="grid">
+    <div class="stat"><div class="label">Devices Enrolled</div><div class="value" id="s-total">—</div><div class="sub" id="s-groups">—</div></div>
+    <div class="stat"><div class="label">Online</div><div class="value ok" id="s-online">—</div><div class="sub" id="s-offline">—</div></div>
+    <div class="stat"><div class="label">Compliant</div><div class="value ok" id="s-compliant">—</div><div class="sub" id="s-reporting">—</div></div>
+    <div class="stat"><div class="label">Non-Compliant</div><div class="value bad" id="s-noncompliant">—</div><div class="sub" id="s-stale">—</div></div>
+    <div class="stat"><div class="label">Policies</div><div class="value" id="s-policies">—</div><div class="sub" id="s-rollouts">—</div></div>
+    <div class="stat"><div class="label">Ingest Rate</div><div class="value" id="s-rate">—</div><div class="sub">reports / sec</div></div>
+  </div>
+
+  <div class="panels">
+    <div class="panel">
+      <h2>Policy Rollout Progress</h2>
+      <div id="rollouts"><div class="empty">No policies published yet.</div></div>
+    </div>
+
+    <div class="panel">
+      <h2>Compliance Replicas &mdash; Live Load Distribution</h2>
+      <table>
+        <thead><tr><th>Replica</th><th>Share of Reports</th><th>Handled</th><th>Rate/s</th><th>Events</th><th>Status</th></tr></thead>
+        <tbody id="instances"><tr><td colspan="6" class="empty">Waiting for traffic…</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <h2>Non-Compliant Devices</h2>
+      <table>
+        <thead><tr><th>Device</th><th>Group</th><th>Findings</th><th>Last Report</th></tr></thead>
+        <tbody id="noncompliant"><tr><td colspan="4" class="empty">Nothing flagged.</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <h2>Service Health</h2>
+      <table>
+        <thead><tr><th>Component</th><th>State</th><th>Detail</th></tr></thead>
+        <tbody id="services"><tr><td colspan="3" class="empty">—</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<footer>Every figure on this page is read through the API gateway. The dashboard holds no database of its own.</footer>
+
+<script>
+const REFRESH_MS = {{ refresh_seconds }} * 1000;
+
+// Previous poll's per-replica counters, so throughput can be shown as a live
+// rate rather than a lifetime total. This is what makes a replica going away
+// obvious within a couple of seconds instead of after minutes of drift.
+let previous = { at: 0, byInstance: {}, totalReports: 0 };
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function ago(iso) {
+  if (!iso) return '—';
+  const secs = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (secs < 60) return Math.round(secs) + 's ago';
+  if (secs < 3600) return Math.round(secs / 60) + 'm ago';
+  return Math.round(secs / 3600) + 'h ago';
+}
+
+function setBanner(message) {
+  const el = $('banner');
+  if (message) { el.textContent = message; el.classList.add('show'); }
+  else { el.classList.remove('show'); }
+}
+
+function renderRollouts(rollouts) {
+  const host = $('rollouts');
+  if (!rollouts || !rollouts.length) {
+    host.innerHTML = '<div class="empty">No policies published yet.</div>';
+    return;
+  }
+  host.innerHTML = rollouts.map(r => {
+    const pct = Math.max(0, Math.min(100, r.percent_complete || 0));
+    return `<div class="rollout">
+      <div class="top">
+        <span class="name">${esc(r.name)} <span class="tag">v${r.version}</span></span>
+        <span class="meta">${r.converged_devices}/${r.targeted_devices} &middot; ${pct}%</span>
+      </div>
+      <div class="bar ${pct >= 100 ? 'ok' : ''}"><i style="width:${pct}%"></i></div>
+      <div class="meta" style="margin-top:5px">target group: ${esc(r.target_group)}</div>
+    </div>`;
+  }).join('');
+}
+
+function renderInstances(instances, elapsedSeconds) {
+  const body = $('instances');
+  if (!instances || !instances.length) {
+    body.innerHTML = '<tr><td colspan="6" class="empty">Waiting for traffic…</td></tr>';
+    return 0;
+  }
+  const total = instances.reduce((sum, i) => sum + i.reports_handled, 0) || 1;
+  let fleetRate = 0;
+
+  body.innerHTML = instances.map(i => {
+    const before = previous.byInstance[i.instance];
+    const rate = (before !== undefined && elapsedSeconds > 0)
+      ? Math.max(0, (i.reports_handled - before) / elapsedSeconds) : 0;
+    fleetRate += rate;
+
+    // A replica that has not been written to recently is either dead or has
+    // been taken out of rotation by the load balancer.
+    const live = i.seconds_since_last_seen < 10;
+    const share = (100 * i.reports_handled / total);
+
+    return `<tr>
+      <td class="mono">${esc(i.instance)}</td>
+      <td style="width:26%"><div class="bar"><i style="width:${share.toFixed(1)}%"></i></div></td>
+      <td>${i.reports_handled.toLocaleString()}</td>
+      <td>${rate >= 0.05 ? rate.toFixed(1) : '—'}</td>
+      <td>${i.events_handled}</td>
+      <td><span class="dot ${live ? 'up' : 'down'}"></span>${live ? 'serving' : 'no traffic ' + Math.round(i.seconds_since_last_seen) + 's'}</td>
+    </tr>`;
+  }).join('');
+
+  return fleetRate;
+}
+
+function renderServices(payload) {
+  const rows = [];
+  for (const name of ['registry', 'policy', 'compliance']) {
+    const section = payload[name];
+    const up = section && section.available;
+    rows.push(`<tr>
+      <td class="mono">${name}-service</td>
+      <td><span class="dot ${up ? 'up' : 'down'}"></span>${up ? 'reachable' : 'unreachable'}</td>
+      <td class="meta" style="color:var(--muted)">${up ? 'responding to aggregate reads' : esc(section?.error || 'no response')}</td>
+    </tr>`);
+  }
+  const bus = payload.policy?.data?.event_bus_connected;
+  rows.push(`<tr>
+    <td class="mono">event-bus</td>
+    <td><span class="dot ${bus ? 'up' : 'down'}"></span>${bus ? 'connected' : 'disconnected'}</td>
+    <td style="color:var(--muted)">policy rollout events</td>
+  </tr>`);
+  $('services').innerHTML = rows.join('');
+}
+
+function renderNoncompliant(devices) {
+  const body = $('noncompliant');
+  if (!devices || !devices.length) {
+    body.innerHTML = '<tr><td colspan="4" class="empty">Nothing flagged.</td></tr>';
+    return;
+  }
+  body.innerHTML = devices.slice(0, 12).map(d => `<tr>
+    <td class="mono">${esc(d.device_id).slice(0, 18)}</td>
+    <td>${esc(d.device_group)}</td>
+    <td>${(d.findings || []).slice(0, 3).map(f => `<span class="tag bad">${esc(f)}</span>`).join(' ')}</td>
+    <td style="color:var(--muted)">${ago(d.last_report_at)}</td>
+  </tr>`).join('');
+}
+
+async function poll() {
+  try {
+    const [summaryRes, ncRes] = await Promise.all([
+      fetch('/api/summary'), fetch('/api/noncompliant'),
+    ]);
+    const payload = await summaryRes.json();
+    const noncompliant = await ncRes.json();
+
+    if (payload.gateway_unreachable) {
+      setBanner('API gateway unreachable — the dashboard reads everything through it, so no fleet data is available.');
+      $('poll-state').classList.remove('live');
+      return;
+    }
+
+    const degraded = payload.degraded || [];
+    setBanner(degraded.length
+      ? `Degraded: ${degraded.join(', ')} unavailable. Remaining services are still serving.`
+      : '');
+    $('poll-state').classList.add('live');
+
+    const registry = payload.registry?.data;
+    const policy = payload.policy?.data;
+    const compliance = payload.compliance?.data;
+
+    if (registry) {
+      $('s-total').textContent = registry.total_devices.toLocaleString();
+      $('s-online').textContent = registry.online.toLocaleString();
+      $('s-offline').textContent = registry.offline.toLocaleString() + ' offline';
+      $('s-groups').textContent = registry.groups.length + ' group' + (registry.groups.length === 1 ? '' : 's');
+    }
+    if (policy) {
+      $('s-policies').textContent = policy.total_policies;
+      $('s-rollouts').textContent = policy.published_policies + ' published · ' + policy.total_rollouts + ' rollouts';
+    }
+
+    const now = Date.now();
+    const elapsed = previous.at ? (now - previous.at) / 1000 : 0;
+
+    if (compliance) {
+      $('s-compliant').textContent = compliance.compliant.toLocaleString();
+      $('s-noncompliant').textContent = compliance.non_compliant.toLocaleString();
+      $('s-reporting').textContent = compliance.total_devices_reporting.toLocaleString() + ' reporting';
+      $('s-stale').textContent = compliance.stale.toLocaleString() + ' stale';
+      renderRollouts(compliance.rollouts);
+      const rate = renderInstances(compliance.instances, elapsed);
+      $('s-rate').textContent = elapsed ? rate.toFixed(1) : '—';
+
+      previous = {
+        at: now,
+        byInstance: Object.fromEntries(compliance.instances.map(i => [i.instance, i.reports_handled])),
+        totalReports: compliance.instances.reduce((s, i) => s + i.reports_handled, 0),
+      };
+    }
+
+    renderNoncompliant(noncompliant);
+    renderServices(payload);
+    $('clock').textContent = new Date().toLocaleTimeString();
+  } catch (err) {
+    setBanner('Dashboard could not reach its backend: ' + err.message);
+  }
+}
+
+poll();
+setInterval(poll, REFRESH_MS);
+</script>
+</body>
+</html>
