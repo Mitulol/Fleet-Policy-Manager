@@ -57,17 +57,40 @@ def main() -> int:
     parser.add_argument("--api-key", default="fleet-admin-key")
     args = parser.parse_args()
 
+    try:
+        existing = _call("GET", f"{args.gateway}/api/policy/policies", args.api_key)
+    except urllib.error.URLError as exc:
+        print(f"  cannot reach the gateway: {exc}", file=sys.stderr)
+        return 1
+    by_key = {(p["name"], p["target_group"]): p["id"] for p in existing}
+
     for spec in POLICIES:
         try:
-            created = _call("POST", f"{args.gateway}/api/policy/policies", args.api_key, spec)
+            key = (spec["name"], spec["target_group"])
+            if key in by_key:
+                # Already seeded once -- update it, which bumps the version,
+                # rather than creating a second copy of the same policy.
+                policy = _call(
+                    "PUT",
+                    f"{args.gateway}/api/policy/policies/{by_key[key]}",
+                    args.api_key,
+                    {"description": spec["description"], "settings": spec["settings"]},
+                )
+                verb = "re-published"
+            else:
+                policy = _call(
+                    "POST", f"{args.gateway}/api/policy/policies", args.api_key, spec
+                )
+                verb = "published"
+
             rollout = _call(
                 "POST",
-                f"{args.gateway}/api/policy/policies/{created['id']}/publish",
+                f"{args.gateway}/api/policy/policies/{policy['id']}/publish",
                 args.api_key,
             )
             print(
-                f"  published  {spec['name']:<26} -> group '{spec['target_group']}'  "
-                f"(event {rollout['event_id'][:8]})"
+                f"  {verb:<13} {spec['name']:<26} -> group '{spec['target_group']}'  "
+                f"v{rollout['version']} (event {rollout['event_id'][:8]})"
             )
         except urllib.error.URLError as exc:
             print(f"  FAILED     {spec['name']}: {exc}", file=sys.stderr)
