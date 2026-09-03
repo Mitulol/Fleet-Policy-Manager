@@ -288,6 +288,34 @@ The same platform runs on **Azure Container Apps** with managed backing
 services. The application images are identical to the local ones — every
 difference is configuration in [`infra/main.bicep`](infra/main.bicep).
 
+### Live deployment
+
+Deployed and load-tested on Azure. One resource group holds the whole platform:
+the Container Apps environment and six apps, Azure Cache for Redis, Azure
+Database for PostgreSQL, a container registry and a Log Analytics workspace.
+
+![Azure resource group — every component of the platform](docs/screenshots/azure-resource-group.png)
+
+Driving 700 simulated devices through the public gateway sustained **~200
+requests/second with zero errors**, and the Compliance service **autoscaled
+from 1 to 5 replicas** on request concurrency — the platform ingress spreading
+load across every replica.
+
+| Compliance replica count during the load test | Replicas running at peak |
+|---|---|
+| ![Replica count rising 1 to 5](docs/screenshots/azure-replica-autoscale.png) | ![Five compliance replicas running](docs/screenshots/azure-replicas-running.png) |
+
+The dashboard, served from its own Container App, reads the whole fleet through
+the public gateway — devices online, policy rollout convergence, per-replica
+load, and flagged devices:
+
+![Fleet dashboard under load](docs/screenshots/cloud-dashboard.png)
+
+Through the same run, each Compliance replica held **~11 ms average response
+time** at 2–3% CPU:
+
+![Compliance CPU and response time under load](docs/screenshots/azure-compliance-load.png)
+
 ### Cloud architecture
 
 ```
