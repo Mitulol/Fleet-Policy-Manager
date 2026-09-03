@@ -1,0 +1,31 @@
+# Keeps the build context small. Every service Dockerfile builds from the
+# repository root (so it can copy in shared/fleetcommon), and `az acr build`
+# uploads the whole context to Azure before building — without this, that
+# upload includes the virtualenv, git history and local databases.
+
+.venv/
+venv/
+.git/
+.github/
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+.env
+.DS_Store
+.idea/
+.vscode/
+
+# Docs and infra are not needed inside any application image.
+docs/
+infra/
+*.md

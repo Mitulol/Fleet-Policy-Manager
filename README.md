@@ -282,6 +282,126 @@ A `Makefile` wraps these as `make up`, `make seed`, `make simulate`,
 
 ---
 
+## Deployment to Azure
+
+The same platform runs on **Azure Container Apps** with managed backing
+services. The application images are identical to the local ones — every
+difference is configuration in [`infra/main.bicep`](infra/main.bicep).
+
+### Cloud architecture
+
+```
+        Internet
+           │
+           ▼
+   ┌───────────────┐        ┌───────────────┐
+   │   gateway     │        │   dashboard   │      external ingress (public HTTPS)
+   │ (public FQDN) │        │ (public FQDN) │
+   └───────┬───────┘        └───────┬───────┘
+           │   internal ingress     │
+   ┌───────┴────────────────────────┘
+   ▼           ▼                 ▼
+┌────────┐ ┌────────┐   ┌──────────────────────┐
+│registry│ │ policy │   │     compliance       │   1..N replicas, autoscaled
+│ 1 rep  │ │ 1 rep  │   │  platform ingress     │   by the Container Apps
+│ephem.  │ │ephem.  │   │  load-balances across │   ingress + KEDA
+└────────┘ └───┬────┘   │  replicas             │
+               │        └──────┬───────────────┘
+      policy rollout events    │
+               ▼               ▼
+   ┌────────────────────┐  ┌──────────────────────────────┐
+   │ Azure Cache for    │  │ Azure Database for PostgreSQL │
+   │ Redis (Basic C0)   │  │ Flexible Server (Burstable)   │
+   │ event bus          │  │ compliance store             │
+   └────────────────────┘  └──────────────────────────────┘
+```
+
+| Local (compose) | Azure |
+|---|---|
+| `registry`, `policy`, `compliance` containers | Container Apps, **internal** ingress |
+| `compliance-lb` (nginx) | **removed** — the platform ingress load-balances across `compliance` replicas |
+| `gateway`, `dashboard` containers | Container Apps, **external** ingress (public HTTPS FQDN) |
+| `redis` container | Azure Cache for Redis, Basic C0, TLS-only |
+| `compliance-db` (postgres container) | Azure Database for PostgreSQL Flexible Server, Burstable B1ms |
+| 3 fixed `compliance` replicas | `compliance` autoscales 1→5 on HTTP concurrency, plus a KEDA rule on event-bus consumer lag |
+
+The horizontal-scaling story is stronger here than locally: replica count is
+driven by real load rather than fixed at three, and the platform's own ingress
+does the load balancing. Each replica still tags its responses with a unique
+identifier, so `GET /api/compliance/stats` shows the live per-replica split.
+
+### Deploy it
+
+Everything is scripted. Requires the [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli)
+and an Azure subscription.
+
+```bash
+az login
+az extension add --name containerapp --upgrade
+
+./infra/deploy.sh
+```
+
+`deploy.sh` creates a resource group and a container registry, builds and
+pushes all six images with `az acr build` (the builds run in Azure), deploys
+everything else from the Bicep template, and prints the public URLs and the
+generated API keys.
+
+```bash
+./infra/loadtest-cloud.sh 500 240      # seed policies, run the simulator, watch replicas scale
+./infra/teardown.sh                    # delete everything
+./infra/teardown.sh --pause            # or just stop the hourly-billed resources
+```
+
+### Failover, in the cloud
+
+While `loadtest-cloud.sh` is running, restart Compliance replicas from another
+shell:
+
+```bash
+az containerapp revision restart --name compliance --resource-group fleet-policy-manager \
+  --revision "$(az containerapp revision list --name compliance --resource-group fleet-policy-manager --query '[0].name' -o tsv)"
+```
+
+The report count keeps climbing and no requests fail — the platform ingress
+stops routing to replicas that fail their health probe and resumes when they
+recover, the same behaviour the local nginx load balancer demonstrates.
+
+### Cost and teardown
+
+| Resource | While running | Paused | Deleted |
+|---|---|---|---|
+| Azure Cache for Redis (Basic C0) | ~$16/mo | **cannot pause** | $0 |
+| PostgreSQL Flexible Server (B1ms) | ~$13/mo | ~$4/mo (storage only) | $0 |
+| Container Registry (Basic) | ~$5/mo | ~$5/mo | $0 |
+| Container Apps | pennies idle, more under load | scale to minimum | $0 |
+| Log Analytics | a few $/mo at demo volume | minimal | $0 |
+
+**Redis on Basic tier cannot be stopped — only deleted.** `teardown.sh` deletes
+the whole resource group by default; `teardown.sh --pause` deletes Redis and
+stops PostgreSQL, dropping the standing cost to roughly $9/mo, and the next
+`deploy.sh` rebuilds Redis and redeploys.
+
+### Known limitations of the demo deployment
+
+- **Basic-tier Redis has no persistence or replica.** If the platform reboots
+  the cache, undelivered events in the stream are lost. The Compliance consumer
+  reclaims in-flight work on reconnect, and policy-rollout volume is low, so
+  this is acceptable for a demo; Standard tier adds a replica, Premium adds
+  persistence.
+- **Registry and Policy use ephemeral storage.** Their SQLite data resets on a
+  revision restart. The simulator re-enrolls devices and `seed_policies.py`
+  re-publishes policies within seconds. Azure Files volumes would make them
+  durable at the cost of SMB file-locking quirks.
+- **ACR admin credentials** are used for image pulls. Managed identity with an
+  `AcrPull` role assignment is the hardening step, left out here because it
+  needs a higher privilege level to deploy.
+- **Database reachable from Azure services.** The PostgreSQL firewall allows
+  Azure-internal traffic rather than a private VNet. VNet integration is the
+  production posture.
+
+---
+
 ## Repository layout
 
 ```
@@ -298,6 +418,11 @@ tools/
   simulator.py           multi-process virtual device fleet
   seed_policies.py        starter policy set
   ha_failover_test.py     scripted failover demonstration
+infra/
+  main.bicep             Azure Container Apps deployment (all resources)
+  deploy.sh              build images, deploy, print URLs
+  loadtest-cloud.sh      run the simulator against the deployed environment
+  teardown.sh            delete or pause the Azure resources
 docs/
   ARCHITECTURE.md         design rationale and request-path walkthroughs
 docker-compose.yml        the entire platform, one command

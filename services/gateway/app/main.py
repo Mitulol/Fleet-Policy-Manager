@@ -50,6 +50,10 @@ ADMIN_RATE_PER_SECOND = env_float("RATE_LIMIT_ADMIN_PER_SECOND", 60.0)
 
 UPSTREAM_TIMEOUT = env_float("UPSTREAM_TIMEOUT_SECONDS", 10.0)
 
+# Shown in the service index at "/". Local Compose default; overridden in a
+# deployed environment so the index points at the real dashboard URL.
+DASHBOARD_URL = env_str("DASHBOARD_URL", "http://localhost:8090")
+
 # Public path prefix to the private service that owns it.
 ROUTES: dict[str, str] = {
     "registry": REGISTRY_URL,
@@ -108,7 +112,7 @@ async def index() -> JSONResponse:
             "description": "Single entry point for the Fleet Policy Manager platform.",
             "documentation": "/docs",
             "health": "/health",
-            "dashboard": "http://localhost:8090",
+            "dashboard": DASHBOARD_URL,
             "routes": {
                 "device registry": "/api/registry/*  -> devices, heartbeats, groups",
                 "policy": "/api/policy/*  -> policy definitions and rollouts",

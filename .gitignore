@@ -12,3 +12,6 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+
+# Azure deployment state (contains generated secrets)
+infra/.deploy-state
