@@ -296,10 +296,10 @@ Database for PostgreSQL, a container registry and a Log Analytics workspace.
 
 ![Azure resource group — every component of the platform](docs/screenshots/azure-resource-group.png)
 
-Driving 700 simulated devices through the public gateway sustained **~200
-requests/second with zero errors**, and the Compliance service **autoscaled
-from 1 to 5 replicas** on request concurrency — the platform ingress spreading
-load across every replica.
+Driving 700 simulated devices through the public gateway put **~50,000 requests
+at roughly 200 per second with zero errors**, and the Compliance service
+**autoscaled from 1 to 5 replicas** on request concurrency — the platform
+ingress spreading load across every replica.
 
 | Compliance replica count during the load test | Replicas running at peak |
 |---|---|
