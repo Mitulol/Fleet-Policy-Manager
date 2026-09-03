@@ -15,7 +15,7 @@
       "value": 5
     },
     "complianceConcurrency": {
-      "value": 40
+      "value": 15
     }
   }
 }

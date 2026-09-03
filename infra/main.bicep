@@ -63,8 +63,8 @@ param gatewayDeviceKeys string
 @maxValue(20)
 param complianceMaxReplicas int = 5
 
-@description('HTTP concurrent-request count per replica that triggers a Compliance scale-out.')
-param complianceConcurrency int = 40
+@description('HTTP concurrent-request count per replica that triggers a Compliance scale-out. Lower values scale out sooner; ~12-20 makes the autoscaling visible under a few hundred simulated devices.')
+param complianceConcurrency int = 15
 
 // ---------------------------------------------------------------- naming
 
